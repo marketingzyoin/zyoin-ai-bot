@@ -1,70 +1,59 @@
 (function(){
 
-// Configuration
-var SHEETS     = (window.ZYOIN_CONFIG && window.ZYOIN_CONFIG.sheets) || '';
-var SLACK      = (window.ZYOIN_CONFIG && window.ZYOIN_CONFIG.slack)  || '';
+// Configuration from Webflow Head
+const SHEETS = (window.ZYOIN_CONFIG && window.ZYOIN_CONFIG.sheets) || '';
+const SLACK  = (window.ZYOIN_CONFIG && window.ZYOIN_CONFIG.slack)  || '';
 
 // ── ZYOIN KNOWLEDGE BASE ─────────────────────────────────────
-var SYSTEM_PROMPT = `You are Zara, Zyoin Group's friendly AI hiring assistant. You help companies find and hire exceptional talent.
-
-ABOUT ZYOIN GROUP:
-Zyoin Group is an AI-augmented recruitment company based in India with global operations. We specialize in connecting businesses with top-tier talent quickly and precisely.
-
-OUR SERVICES:
-1. Permanent Hiring, 2. Leadership Hiring, 3. Global Hiring, 4. RPO, 5. Contract Hiring, 6. Managed Recruitment, 7. Talent Intelligence, 8. Hire Meetups, 9. Payroll, 10. HR Outsourcing.
-
-YOUR ROLE:
-- Collect contact details naturally (name, email, company, phone).
-- When you collect email/phone, include this EXACT marker: [LEAD_CAPTURED]
-- Format collected data as: [DATA: name="X" email="X" phone="X" company="X" need="X"]
-- Keep responses concise. Professional but warm.`;
+const SYSTEM_PROMPT = `You are Zara, Zyoin Group's friendly AI hiring assistant. You help companies find and hire exceptional talent.
+ABOUT ZYOIN: AI-augmented recruitment company in India. Services: Permanent/Leadership Hiring, RPO, Global Hiring, Contract staffing.
+ROLE: Answer questions concisely. Naturally collect Name, Email, Company, and Phone.
+FORMAT: When you have lead info, append [LEAD_CAPTURED][DATA: name="X" email="X" phone="X" company="X" need="X"] to the end of your message.`;
 
 // ── STATE ─────────────────────────────────────────────────────
-var messages = [];
-var leadData = { name:'', email:'', phone:'', company:'', need:'' };
-var leadSent = false;
-var isOpen   = false;
-var isTyping = false;
+let messages = [];
+let leadData = { name:'', email:'', phone:'', company:'', need:'' };
+let leadSent = false;
+let isOpen   = false;
+let isTyping = false;
 
 // ── SEND LEAD TO SHEET + SLACK ────────────────────────────────
-function sendLead(){
+async function sendLead() {
   if(leadSent || !leadData.email) return;
   leadSent = true;
 
-  var payload = {
-    timestamp:   new Date().toISOString(),
-    name:        leadData.name,
-    email:       leadData.email,
-    phone:       leadData.phone,
-    company:     leadData.company,
-    need:        leadData.need,
-    source:      'Zyoin Chatbot',
-    slackUrl:    SLACK,
+  const payload = {
+    action: 'lead',
+    timestamp: new Date().toISOString(),
+    ...leadData,
+    source: 'Zyoin Chatbot',
+    slackUrl: SLACK,
     currentPage: window.location.pathname,
   };
 
-  fetch(SHEETS, {
-    method: 'POST',
-    mode: 'no-cors', // Bypass CORS for lead logging
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify(payload)
-  }).catch(e => console.log("Lead log noted"));
+  try {
+    await fetch(SHEETS, {
+      method: 'POST',
+      mode: 'no-cors', // Lead logging doesn't need a response
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload)
+    });
+  } catch(e) { console.error("Lead Error:", e); }
 }
 
-// ── FIXED COMMUNICATION LOGIC (CORS FIX) ───────────────────────
+// ── API CALL TO CLAUDE (VIA GOOGLE SCRIPT) ────────────────────
 async function askClaude(userMessage, onDone) {
-  messages.push({ role:'user', content: userMessage });
+  messages.push({ role: 'user', content: userMessage });
 
-  var payload = {
-    action:  'chat',
+  const payload = {
+    action: 'chat',
     message: userMessage,
     history: messages.slice(0, -1),
-    system:  SYSTEM_PROMPT,
-    page:    window.location.pathname
+    system: SYSTEM_PROMPT
   };
 
   try {
-    // We send as text/plain to Google Apps Script to avoid CORS pre-flight blocks
+    // FIXED: Use fetch to handle Google Script redirect & CORS
     const response = await fetch(SHEETS, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -72,123 +61,101 @@ async function askClaude(userMessage, onDone) {
     });
 
     const data = await response.json();
-    const reply = data.reply || "I'm sorry, I couldn't process that. Please try again.";
+    const reply = data.reply || "I'm sorry, I'm having trouble thinking. Please try again.";
 
-    // Parse lead data if captured
-    var leadMatch = reply.match(/\[DATA:\s*([^\]]+)\]/);
+    // Parse lead data
+    const leadMatch = reply.match(/\[DATA:\s*([^\]]+)\]/);
     if(leadMatch){
-      var pairs = leadMatch[1].match(/(\w+)="([^"]*)"/g) || [];
-      pairs.forEach(function(p){
-        var m = p.match(/(\w+)="([^"]*)"/);
+      const pairs = leadMatch[1].match(/(\w+)="([^"]*)"/g) || [];
+      pairs.forEach(p => {
+        const m = p.match(/(\w+)="([^"]*)"/);
         if(m && leadData.hasOwnProperty(m[1])) leadData[m[1]] = m[2];
       });
     }
 
-    var displayReply = reply
-      .replace(/\[LEAD_CAPTURED\]/g,'')
-      .replace(/\[DATA:[^\]]*\]/g,'')
-      .trim();
-
-    messages.push({ role:'assistant', content: displayReply });
-    onDone(displayReply);
+    const displayReply = reply.replace(/\[LEAD_CAPTURED\]/g,'').replace(/\[DATA:[^\]]*\]/g,'').trim();
+    messages.push({ role: 'assistant', content: displayReply });
 
     if(reply.indexOf('[LEAD_CAPTURED]') > -1) sendLead();
+    onDone(displayReply);
 
   } catch (e) {
-    console.error("Zara Error:", e);
-    // UPDATED EMAIL TO info@zyoin.com
+    console.error("Zara Connection Error:", e);
     onDone("Connection issue. Please try again or email info@zyoin.com");
   }
 }
 
-// ── UI LOGIC (REST OF YOUR ORIGINAL CODE) ──────────────────────
-function injectCSS(){
+// ── UI INJECTION ─────────────────────────────────────────────
+function injectCSS() {
   if(document.getElementById('zchat-css')) return;
-  var s = document.createElement('style');
-  s.id  = 'zchat-css';
-  s.textContent = [
-    '@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap");',
-    '#zchat-btn{position:fixed;bottom:28px;right:28px;z-index:99996;width:56px;height:56px;background:#ff7200;border:none;border-radius:50%;cursor:pointer;box-shadow:0 4px 20px rgba(255,114,0,0.45);transition:transform .2s;display:flex;align-items:center;justify-content:center;}',
-    '#zchat-btn:hover{transform:scale(1.08);}',
-    '#zchat-win{position:fixed;bottom:96px;right:28px;z-index:99996;width:360px;height:520px;background:#0f0f14;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,0.5);display:flex;flex-direction:column;overflow:hidden;transform:scale(.95) translateY(20px);opacity:0;pointer-events:none;transition:all .3s ease;font-family:"Plus Jakarta Sans",sans-serif;}',
-    '#zchat-win.open{transform:scale(1) translateY(0);opacity:1;pointer-events:all;}',
-    '#zchat-head{background:#181820;padding:16px 18px;display:flex;align-items:center;gap:12px;color:#fff;}',
-    '#zchat-msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;}',
-    '.zcm-bubble{padding:10px 14px;border-radius:14px;font-size:12.5px;line-height:1.6;}',
-    '.zcm.bot .zcm-bubble{background:#1e1e2a;color:#e8e8e8;}',
-    '.zcm.user .zcm-bubble{background:#ff7200;color:#fff;align-self:flex-end;}',
-    '#zchat-input-wrap{padding:12px 14px;border-top:1px solid rgba(255,255,255,0.06);display:flex;gap:10px;}',
-    '#zchat-input{flex:1;background:#1e1e2a;border:none;border-radius:12px;padding:10px;color:#fff;outline:none;resize:none;}',
-    '#zchat-send{background:#ff7200;border:none;border-radius:10px;padding:8px;cursor:pointer;}',
-    '#zchat-typing{padding:10px;color:#666;font-size:11px;display:none;}'
-  ].join('');
+  const s = document.createElement('style');
+  s.id = 'zchat-css';
+  s.textContent = `
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
+    #zchat-btn { position:fixed; bottom:25px; right:25px; z-index:9999; width:60px; height:60px; background:#ff7200; border-radius:50%; border:none; cursor:pointer; box-shadow:0 5px 15px rgba(0,0,0,0.2); display:flex; align-items:center; justify-content:center; transition:0.3s; }
+    #zchat-win { position:fixed; bottom:100px; right:25px; z-index:9999; width:360px; height:500px; background:#0f0f14; border-radius:15px; box-shadow:0 10px 40px rgba(0,0,0,0.4); display:none; flex-direction:column; overflow:hidden; font-family:'Plus Jakarta Sans', sans-serif; }
+    #zchat-win.open { display:flex; }
+    #zchat-head { background:#181820; padding:15px; color:#fff; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #222; }
+    #zchat-msgs { flex:1; overflow-y:auto; padding:15px; display:flex; flex-direction:column; gap:10px; color:#e0e0e0; font-size:13px; }
+    .zmsg { padding:10px 14px; border-radius:12px; max-width:85%; line-height:1.5; }
+    .zbot { background:#1e1e2a; align-self:flex-start; border-bottom-left-radius:2px; }
+    .zuser { background:#ff7200; color:#fff; align-self:flex-end; border-bottom-right-radius:2px; }
+    #zchat-input-area { padding:10px; background:#181820; display:flex; gap:8px; border-top:1px solid #222; }
+    #zchat-input { flex:1; background:#0f0f14; border:1px solid #333; color:#fff; padding:8px 12px; border-radius:8px; outline:none; resize:none; font-size:13px; }
+    #zchat-send { background:#ff7200; border:none; border-radius:8px; color:#fff; padding:0 12px; cursor:pointer; }
+    #zchat-typing { font-size:11px; color:#666; display:none; }
+  `;
   document.head.appendChild(s);
 }
 
-function buildChatbot(){
+function buildUI() {
   injectCSS();
-  
-  var btn = document.createElement('button');
+  const btn = document.createElement('button');
   btn.id = 'zchat-btn';
-  btn.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="#fff" stroke-width="2"/></svg>';
-  btn.onclick = function(){ isOpen ? closeChat() : openChat(); };
+  btn.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
+  btn.onclick = () => { isOpen = !isOpen; document.getElementById('zchat-win').classList.toggle('open', isOpen); };
   document.body.appendChild(btn);
 
-  var win = document.createElement('div');
+  const win = document.createElement('div');
   win.id = 'zchat-win';
-  win.innerHTML = [
-    '<div id="zchat-head"><strong>Zara · Zyoin AI</strong><button id="zchat-close" style="margin-left:auto;background:none;border:none;color:#fff;cursor:pointer;">✕</button></div>',
-    '<div id="zchat-msgs"><div id="zchat-typing">Zara is typing...</div></div>',
-    '<div id="zchat-input-wrap"><textarea id="zchat-input" placeholder="Ask me anything..."></textarea><button id="zchat-send"><svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div>'
-  ].join('');
+  win.innerHTML = `
+    <div id="zchat-head"><strong>Zara · Zyoin AI</strong><span style="cursor:pointer" onclick="document.getElementById('zchat-win').classList.remove('open')">✕</span></div>
+    <div id="zchat-msgs"><div class="zmsg zbot">Hi! I'm Zara. How can I help you with your hiring today?</div><div id="zchat-typing">Zara is thinking...</div></div>
+    <div id="zchat-input-area"><textarea id="zchat-input" rows="1" placeholder="Type a message..."></textarea><button id="zchat-send">Send</button></div>
+  `;
   document.body.appendChild(win);
 
-  document.getElementById('zchat-close').onclick = closeChat;
-  document.getElementById('zchat-send').onclick = sendMessage;
-  document.getElementById('zchat-input').onkeydown = function(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); }};
+  const input = document.getElementById('zchat-input');
+  const send = document.getElementById('zchat-send');
 
-  addBotMessage("Hi there! 👋 I'm Zara, Zyoin's AI hiring assistant. How can I help you today?");
+  const handleSend = () => {
+    const text = input.value.trim();
+    if(!text || isTyping) return;
+    input.value = '';
+    addMsg(text, 'zuser');
+    isTyping = true;
+    document.getElementById('zchat-typing').style.display = 'block';
+    askClaude(text, (reply) => {
+      isTyping = false;
+      document.getElementById('zchat-typing').style.display = 'none';
+      addMsg(reply, 'zbot');
+    });
+  };
+
+  send.onclick = handleSend;
+  input.onkeydown = (e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
 }
 
-function openChat(){ isOpen=true; document.getElementById('zchat-win').classList.add('open'); }
-function closeChat(){ isOpen=false; document.getElementById('zchat-win').classList.remove('open'); }
-
-function addBotMessage(text){
-  var msgs = document.getElementById('zchat-msgs');
-  var div = document.createElement('div');
-  div.className = 'zcm bot';
-  div.innerHTML = '<div class="zcm-bubble">' + text + '</div>';
-  msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
+function addMsg(text, cls) {
+  const m = document.getElementById('zchat-msgs');
+  const d = document.createElement('div');
+  d.className = `zmsg ${cls}`;
+  d.innerText = text;
+  m.insertBefore(d, document.getElementById('zchat-typing'));
+  m.scrollTop = m.scrollHeight;
 }
 
-function addUserMessage(text){
-  var msgs = document.getElementById('zchat-msgs');
-  var div = document.createElement('div');
-  div.className = 'zcm user';
-  div.innerHTML = '<div class="zcm-bubble">' + text + '</div>';
-  msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
-}
-
-function sendMessage(){
-  var input = document.getElementById('zchat-input');
-  var text = input.value.trim();
-  if(!text || isTyping) return;
-  input.value = '';
-  addUserMessage(text);
-  
-  isTyping = true;
-  document.getElementById('zchat-typing').style.display = 'block';
-
-  askClaude(text, function(reply){
-    isTyping = false;
-    document.getElementById('zchat-typing').style.display = 'none';
-    addBotMessage(reply);
-  });
-}
-
-if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', buildChatbot);
-else buildChatbot();
+if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', buildUI);
+else buildUI();
 
 })();
