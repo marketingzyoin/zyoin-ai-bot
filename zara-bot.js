@@ -132,7 +132,7 @@ function askClaude(userMessage, onChunk, onDone) {
   })
   .catch(err => {
     console.error("Zara Error:", err);
-    onDone("I'm having trouble connecting. Please try again or email hello@zyoin.com");
+    onDone("I'm having trouble connecting. Please try again or email info@zyoin.com");
   });
 }
 
